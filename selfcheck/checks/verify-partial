@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# selfcheck/checks/verify-partial -- live (TIER=live), read-only.
+#
+# Encodes "a container running is NOT a service serving". For every service in
+# `neadm service list`, the corresponding `neadm <proto> status` must report it
+# as actually serving; a service that exists but has no server bound / no serve
+# path / no LUN|export is a FAIL -- so a half-deployed cluster can never be
+# mistaken for a healthy one. Skipped unless --live. Read-only.
+#
+# Usage: verify-partial --target <conf-dir>
+
+set -u
+SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/common.sh"
+
+TARGET_DIR=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--target) TARGET_DIR="${2:-}"; shift 2 ;;
+		--target=*) TARGET_DIR="${1#*=}"; shift ;;
+		*) shift ;;
+	esac
+done
+SELFCHECK_TARGET="$(basename "${TARGET_DIR:-global}")"
+
+if [ "${SELFCHECK_LIVE:-0}" != 1 ]; then
+	skip_na partial.live "partial-readiness verification needs --live (a reachable cluster)"
+	sc_finish
+fi
+[ -n "${SELFCHECK_MOCKS:-}" ] && PATH="$SELFCHECK_MOCKS:$PATH"
+need() { command -v "$1" >/dev/null 2>&1; }
+
+is_ready() {  # serving == says "ready" AND not "not ready"
+	printf '%s' "$1" | grep -qi 'ready' && ! printf '%s' "$1" | grep -qi 'not ready'
+}
+
+if ! need neadm; then
+	skip_dep partial.neadm "neadm not available" "set up the neadm alias"
+	sc_finish
+fi
+
+services="$(neadm service list 2>/dev/null)"
+if [ -z "$services" ]; then
+	skip_dep partial.list "neadm service list returned nothing" "ensure the management endpoint is reachable"
+	sc_finish
+fi
+
+viol=0
+while read -r name proto _rest; do
+	[ -n "$name" ] || continue
+	case "$proto" in
+		iscsi)     status="$(neadm iscsi status "$name" 2>/dev/null)" ;;
+		nfs)       status="$(neadm nfs status "$name" 2>/dev/null)" ;;
+		s3|swift)  status="$(neadm service show "$name" 2>/dev/null)" ;;
+		*)         status="ready" ;;   # unknown proto: do not flag
+	esac
+	if is_ready "$status"; then
+		:
+	else
+		fail partial.notserving "service '$name' ($proto) exists but is NOT serving (no server bound / no serve path / no LUN|export)" \
+			"finish deployment: neadm service add/serve + create bucket/LUN/share"
+		viol=$((viol+1))
+	fi
+done <<< "$services"
+
+[ "$viol" -eq 0 ] && pass partial.ok "every service in 'neadm service list' is actually serving"
+
+sc_finish

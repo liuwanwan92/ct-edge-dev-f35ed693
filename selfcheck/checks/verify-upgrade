@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# selfcheck/checks/verify-upgrade -- live (TIER=live), read-only.
+#
+# Catches "upgrade before/after inconsistency":
+#   * version skew between the neadm CLI image and the nedge container image
+#     (neadm version --short  vs  neadm system version);
+#   * schema drift -- the reused nesetup.json is missing a key the new image
+#     requires (key list via $SELFCHECK_SCHEMA_KEYS, one dotpath per line);
+#   * post-upgrade readiness -- REST is back on :8080 after the restart.
+# Skipped unless --live. Read-only.
+#
+# Usage: verify-upgrade --target <conf-dir>   [SELFCHECK_SCHEMA_KEYS=<file>]
+
+set -u
+SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/common.sh"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/json.sh"
+
+TARGET_DIR=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--target) TARGET_DIR="${2:-}"; shift 2 ;;
+		--target=*) TARGET_DIR="${1#*=}"; shift ;;
+		*) shift ;;
+	esac
+done
+profile="$(basename "${TARGET_DIR:-global}")"
+SELFCHECK_TARGET="$profile"
+nesetup="$TARGET_DIR/nesetup.json"
+
+if [ "${SELFCHECK_LIVE:-0}" != 1 ]; then
+	skip_na upgrade.live "upgrade verification needs --live (a reachable cluster)"
+	sc_finish
+fi
+[ -n "${SELFCHECK_MOCKS:-}" ] && PATH="$SELFCHECK_MOCKS:$PATH"
+need() { command -v "$1" >/dev/null 2>&1; }
+
+# --- version skew -----------------------------------------------------------
+if ! need neadm; then
+	skip_dep upgrade.version "neadm not available" "set up the neadm alias"
+else
+	na="$(neadm version --short 2>/dev/null | tr -d '[:space:]')"
+	nd="$(neadm system version 2>/dev/null | tr -d '[:space:]')"
+	if [ -z "$na" ] || [ -z "$nd" ]; then
+		skip_dep upgrade.version "could not read both versions (neadm='$na' nedge='$nd')" "ensure the cluster is reachable"
+	elif [ "$na" = "$nd" ]; then
+		pass upgrade.version "neadm and nedge image versions match ($na)"
+	else
+		fail upgrade.version "version skew: neadm=$na nedge=$nd" \
+			"pull matching nexenta/nedge and nexenta/nedge-neadm tags, then re-run start (see upgrade.md)"
+	fi
+fi
+
+# --- schema drift -----------------------------------------------------------
+keys_file="${SELFCHECK_SCHEMA_KEYS:-}"
+if [ -z "$keys_file" ]; then
+	note upgrade.schema "set SELFCHECK_SCHEMA_KEYS=<file> (one nesetup dotpath per line) to check schema drift"
+elif [ ! -f "$nesetup" ]; then
+	fail upgrade.schema "$nesetup not found" "point --target at a profile with a nesetup.json"
+elif [ ! -f "$keys_file" ]; then
+	skip_dep upgrade.schema "schema key file $keys_file not found" "provide a readable key list"
+elif ! sc_json_available; then
+	skip_dep upgrade.schema "no JSON backend (need jq or python)" "install jq or python3"
+else
+	miss=0
+	while IFS= read -r k || [ -n "$k" ]; do
+		k="${k%%#*}"; k="$(printf '%s' "$k" | tr -d '[:space:]')"
+		[ -n "$k" ] || continue
+		if ! sc_json_type "$nesetup" "$k" >/dev/null 2>&1; then
+			fail upgrade.schema "nesetup.json is missing a key the target image requires: $k" \
+				"regenerate nesetup.json for the new image / re-install (upgrade.md)"
+			miss=$((miss+1))
+		fi
+	done < "$keys_file"
+	[ "$miss" -eq 0 ] && pass upgrade.schema "nesetup.json has every key required by the target image"
+fi
+
+# --- post-upgrade readiness -------------------------------------------------
+if ! need netstat; then
+	skip_dep upgrade.readiness "netstat not available" "install net-tools or run on the node"
+elif netstat -ant 2>/dev/null | grep ':8080' | grep -q LISTEN; then
+	pass upgrade.readiness "REST API back up on :8080 after upgrade"
+else
+	fail upgrade.readiness "REST API not listening on :8080 after upgrade" \
+		"restart the data container and verify the persistent var/ state is intact"
+fi
+
+sc_finish

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# mock showmount -- nedge-prom-nfs-check probes liveness only (output ignored).
+#   MOCK_SHOWMOUNT = ok (default, returns fast) | hang (>19s => nfs-check -2)
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+[ "${MOCK_SHOWMOUNT:-ok}" = hang ] && sleep 25
+exit 0

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# mock mount -- dual use:
+#   nedge-prom-nfs-check calls `mount -l -t nfs,...`  => emit an NFS listing
+#   nestart calls `mount --make-shared /`             => succeed silently
+#   MOCK_NFS_MOUNTED = 1 (default) | 0   (0 => no NFS mounts => nfs-check -3)
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+case " $* " in
+	*" -l "*|*nfs*)
+		[ "${MOCK_NFS_MOUNTED:-1}" = 0 ] && exit 0
+		echo "10.0.0.5:/export1 on /mnt/nfssvc1 type nfs4 (rw,addr=10.0.0.5)"
+		echo "10.0.0.6:/export2 on /mnt/nfssvc2 type nfs4 (rw,addr=10.0.0.6)"
+		;;
+esac
+exit 0

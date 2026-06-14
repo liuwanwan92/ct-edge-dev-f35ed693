@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# mock openssl -- s3-check pipes a string through `openssl sha1 -binary -hmac KEY`.
+# The signature value is irrelevant (mock curl ignores it); just emit bytes.
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+cat >/dev/null 2>&1 || true
+printf 'mocksig'

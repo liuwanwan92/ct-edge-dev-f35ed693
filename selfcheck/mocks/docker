@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# mock docker -- stand-in for the privileged operations the harness must NOT run
+# for real. Mainly used to exercise install_dashboard.sh's re-run guard.
+#   MOCK_DOCKER_PROM = absent (default) | present  (present => a "prometheus" row)
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+case "${1:-}" in
+	ps)
+		echo "CONTAINER ID   IMAGE   STATUS   NAMES"
+		[ "${MOCK_DOCKER_PROM:-absent}" = present ] && echo "abc123 prom/prometheus Up prometheus" ;;
+	inspect) echo "172.18.0.2" ;;
+	pull|run|rm|exec|network|volume|stop|start|tag|image|images) : ;;
+	*) : ;;
+esac
+exit 0

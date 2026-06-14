@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# mock base64 -- s3-check pipes the HMAC through base64. Deterministic stub.
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+cat >/dev/null 2>&1 || true
+printf 'bW9ja3NpZw=='

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# mock iscsi-ls -- drives nedge-prom-iscsi-check.
+#   MOCK_ISCSI_STATE = ready (default) | nolun | down
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+case "${MOCK_ISCSI_STATE:-ready}" in
+	down)  exit 1 ;;                                            # not discoverable -> -1
+	nolun) echo "Target:iqn.2018-01.com.nexenta:iscsisvc Portal:10.0.0.1:3260" ; exit 0 ;;  # no LUN -> 0
+	*)     echo "Target:iqn.2018-01.com.nexenta:iscsisvc Portal:10.0.0.1:3260 Lun:1 (8G)" ; exit 0 ;;  # -> 1
+esac

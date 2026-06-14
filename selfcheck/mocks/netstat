@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# mock netstat -- verify-deploy checks `netstat -ant | grep :PORT | grep LISTEN`.
+#   MOCK_NO_LISTEN = space-separated ports to report as NOT listening.
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+for p in 8080 3260 111 9982 9981 14000; do
+	case " ${MOCK_NO_LISTEN:-} " in *" $p "*) continue ;; esac
+	echo "tcp 0 0 0.0.0.0:$p 0.0.0.0:* LISTEN"
+done
+exit 0

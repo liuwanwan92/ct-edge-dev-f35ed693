@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# mock curl -- drives nedge-prom-s3-check (auth HEADs + service check) and the
+# verify-deploy reachability probe (no-auth).
+#   MOCK_S3_STATE = ok (default) | bucket | obj | down
+#     ok     : object HEAD 200          -> s3-check 1
+#     bucket : object 404, bucket 200   -> s3-check 0
+#     obj    : both HEAD 404, root 403  -> s3-check -1
+#     down   : both HEAD 404, root err  -> s3-check -2  (and verify-deploy unreachable)
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+state="${MOCK_S3_STATE:-ok}"
+url=""; has_auth=0
+for a in "$@"; do
+	case "$a" in http://*|https://*) url="$a" ;; esac
+	case "$a" in *"Authorization: AWS"*) has_auth=1 ;; esac
+done
+# count non-empty path segments after the host
+path="${url#*://}"; path="${path#*/}"; [ "$path" = "$url" ] && path=""
+nseg=0; rest="$path"
+while [ -n "$rest" ]; do
+	seg="${rest%%/*}"; [ -n "$seg" ] && nseg=$((nseg+1))
+	case "$rest" in */*) rest="${rest#*/}";; *) rest="";; esac
+done
+if [ "$has_auth" = 1 ]; then
+	is_object=0; [ "$nseg" -ge 2 ] && is_object=1
+	case "$state" in
+		ok)     echo "HTTP/1.1 200 OK" ;;
+		bucket) if [ "$is_object" = 1 ]; then echo "HTTP/1.1 404 Not Found"; else echo "HTTP/1.1 200 OK"; fi ;;
+		*)      echo "HTTP/1.1 404 Not Found" ;;
+	esac
+	exit 0
+else
+	case "$state" in
+		down) exit 7 ;;                       # connection refused
+		*)    echo "HTTP/1.1 403 Forbidden" ;;  # S3 root returns 403 -> service is up
+	esac
+	exit 0
+fi

@@ -1,0 +1,15 @@
+name: selfcheck
+on: [push, pull_request]
+
+# Static/mock layer only: no docker, no root, no cluster. The live layer
+# (--live) is host-only and not run in CI -- wire it as a separate manual job
+# on a staging runner if you have a reachable cluster.
+jobs:
+  static-mock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq and bats
+        run: sudo apt-get update && sudo apt-get install -y jq bats
+      - name: Run self-check (static/mock + bats)
+        run: bash selfcheck/run-ci.sh

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# mock df -- nedge-prom-nfs-check probes liveness only.
+#   MOCK_DF = ok (default, returns fast) | hang (>19s => nfs-check -1)
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+[ "${MOCK_DF:-ok}" = hang ] && sleep 25
+exit 0

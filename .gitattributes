@@ -1,0 +1,7 @@
+# Keep shell scripts and the self-check harness LF-only so a Windows checkout
+# (core.autocrlf=true) cannot introduce CRLF that breaks `bash -n` / `read`.
+selfcheck/** text eol=lf
+scripts/* text eol=lf
+prometheus/install_dashboard.sh text eol=lf
+prometheus/svc-checks/* text eol=lf
+*.sh text eol=lf

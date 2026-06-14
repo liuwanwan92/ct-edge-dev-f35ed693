@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# mock socat -- the svc-check exporters are normally launched via socat; the
+# harness drives them directly instead, so this is only a harmless stand-in.
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+exit 0

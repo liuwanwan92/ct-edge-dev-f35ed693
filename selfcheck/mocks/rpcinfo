@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# mock rpcinfo -- two call shapes:
+#   nedge-prom-nfs-check: `rpcinfo -u <ip> nfs` => emit ready|waiting (or nothing)
+#   verify-deploy:        `rpcinfo -p`          => emit a portmapper table w/ nfs
+#   MOCK_RPCINFO = ready (default) | down  (down => nfs-check 0)
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+case " $* " in
+	*" -u "*)
+		case "${MOCK_RPCINFO:-ready}" in
+			down) : ;;
+			*)    echo "program 100003 version 3 ready" ;;
+		esac ;;
+	*" -p "*)
+		echo "  100000 2 tcp 111 portmapper"
+		echo "  100003 3 tcp 2049 nfs" ;;
+esac
+exit 0

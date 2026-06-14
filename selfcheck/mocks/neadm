@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# mock neadm -- drives the live readiness/upgrade/partial oracles.
+#   MOCK_NEADM_VERSION / MOCK_NEDGE_VERSION : version-skew detection
+#   MOCK_DEV_STATE   = online (default) | offline
+#   MOCK_NEADM_PARTIAL = 0 (default) | 1   (service exists but not serving)
+#   MOCK_SYSTEM      = ok (default) | bad
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+sub="${1:-}"
+case "$sub" in
+	version) echo "${MOCK_NEADM_VERSION:-3.5.0}" ;;
+	system)
+		case "${2:-}" in
+			version) echo "${MOCK_NEDGE_VERSION:-3.5.0}" ;;
+			status)  if [ "${MOCK_SYSTEM:-ok}" = bad ]; then echo "STATUS: Cluster degraded state"
+			         else echo "STATUS: Cluster in consistent state"; fi ;;
+			*)       echo "ok" ;;
+		esac ;;
+	device)
+		case "${2:-}" in
+			list) st=ONLINE; [ "${MOCK_DEV_STATE:-online}" = offline ] && st=OFFLINE
+			      echo "ZONE:HOST:CID SID DEVID UTIL CAP STATE"
+			      echo "0:host:c0 SID1 dev1 1% 1T $st"
+			      echo "0:host:c0 SID2 dev2 1% 1T $st" ;;
+			nbd)  echo "/dev/nbd0 cltest/bk/vol" ;;
+			*)    : ;;
+		esac ;;
+	iscsi)
+		if [ "${MOCK_NEADM_PARTIAL:-0}" = 1 ]; then
+			echo "State: not ready"
+		else
+			echo "State: ready"; echo "LUN1 Online: Yes 8G"
+		fi ;;
+	nfs)
+		case "${2:-}" in
+			status) if [ "${MOCK_NEADM_PARTIAL:-0}" = 1 ]; then echo "share not ready"; else echo "share /statistics ready"; fi ;;
+			list)   echo "nfs-finance company-branch1/finance/statistics" ;;
+			*)      : ;;
+		esac ;;
+	service)
+		case "${2:-}" in
+			list)   echo "iscsi-mongodb iscsi"; echo "s3finance s3"; echo "nfs-finance nfs" ;;
+			show)   if [ "${MOCK_NEADM_PARTIAL:-0}" = 1 ]; then echo "no server bound"; else echo "ready"; fi ;;
+			status) echo "ready" ;;
+			*)      : ;;
+		esac ;;
+	msite) echo "site backup-server ready" ;;
+	*)     : ;;
+esac
+exit 0

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# mock hostname -- svc-checks embed `hostname` in the metric labels.
+_d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; . "${_d}/mocklib.sh" 2>/dev/null || mock_log(){ :; }
+mock_log "$@"
+echo "selfcheck-host"

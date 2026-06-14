@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# selfcheck/checks/check-scripts -- static, CI-always.
+#
+# Sanity of the reused operational scripts:
+#   * every script parses (`bash -n`) -- catches CRLF/syntax breakage;
+#   * nestart safely refuses a config dir with no nesetup.json (its guard path
+#     runs BEFORE any privileged op, so it is safe to exercise in CI);
+#   * install_dashboard.sh's re-run guards are reported. The prometheus guard
+#     exists; the grafana container has none and its password step is
+#     order-dependent (fails on a second run). That is surfaced as a NOTE by
+#     default (it is a pre-existing script, not a harness failure); set
+#     SELFCHECK_SCRIPT_GUARDS=strict to treat it as a FAIL. The concrete
+#     repeated-call hazard is demonstrated by tests/idempotency_*.bats.
+
+set -u
+SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SC_ROOT="$(cd "$SC_DIR/../.." && pwd)"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/common.sh"
+SELFCHECK_TARGET="global"
+: "${SELFCHECK_MOCKS:=$SC_DIR/../mocks}"
+
+NESTART="$SC_ROOT/scripts/nestart"
+INSTALL="$SC_ROOT/prometheus/install_dashboard.sh"
+ISCSI="$SC_ROOT/prometheus/svc-checks/nedge-prom-iscsi-check"
+NFS="$SC_ROOT/prometheus/svc-checks/nedge-prom-nfs-check"
+S3="$SC_ROOT/prometheus/svc-checks/nedge-prom-s3-check"
+
+# --- parse every script ------------------------------------------------------
+for s in "$NESTART" "$INSTALL" "$ISCSI" "$NFS" "$S3"; do
+	b="$(basename "$s")"
+	if [ ! -f "$s" ]; then
+		fail "scripts.missing.$b" "$s not found" "restore the script"
+		continue
+	fi
+	if err="$(bash -n "$s" 2>&1)"; then
+		pass "scripts.parse.$b" "$b parses cleanly"
+	else
+		fail "scripts.parse.$b" "$b failed bash -n: $err" "fix the syntax (CRLF? pin LF via .gitattributes)"
+	fi
+done
+
+# --- nestart guard path (safe: runs before docker/modprobe/mount) ------------
+if [ -f "$NESTART" ]; then
+	tmpd="$(mktemp -d)"
+	out="$(PATH="$SELFCHECK_MOCKS:$PATH" bash "$NESTART" "$tmpd/nope" 2>&1)"; rc=$?
+	rm -rf "$tmpd"
+	if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'nesetup.json not found'; then
+		pass scripts.nestart.guard "nestart refuses a config dir without nesetup.json (exit $rc) before any privileged op"
+	else
+		fail scripts.nestart.guard "nestart did not cleanly refuse a missing nesetup.json (exit $rc)" \
+			"nestart must validate \$CDIR/nesetup.json before modprobe/mount/docker"
+	fi
+fi
+
+# --- install_dashboard re-run guards -----------------------------------------
+if [ -f "$INSTALL" ]; then
+	if grep -q 'docker ps -a --filter name="prometheus"' "$INSTALL"; then
+		pass scripts.install.prom_guard "install_dashboard guards re-creation of the prometheus container"
+	else
+		note scripts.install.prom_guard "install_dashboard lacks the documented prometheus re-run guard"
+	fi
+	if grep -q 'filter name="grafana"' "$INSTALL"; then
+		pass scripts.install.grafana_guard "install_dashboard guards the grafana container too"
+	else
+		gmsg='install_dashboard.sh has no re-run guard for the grafana container, and its admin-password change is order-dependent (oldPassword:admin) so a second run fails -- not idempotent (see tests/idempotency_repeated_invocation.bats)'
+		if [ "${SELFCHECK_SCRIPT_GUARDS:-note}" = strict ]; then
+			fail scripts.install.grafana_guard "$gmsg" "add a docker ps guard for grafana and make the password step idempotent"
+		else
+			note scripts.install.grafana_guard "$gmsg"
+		fi
+	fi
+fi
+
+sc_finish

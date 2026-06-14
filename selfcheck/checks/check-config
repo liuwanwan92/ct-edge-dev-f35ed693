@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+#
+# selfcheck/checks/check-config -- static, CI-always.
+#
+# Validate one configuration profile's nesetup.json against the invariants that
+# distinguish a deployable config from a silently-broken one. Catches the
+# "config missing items" class: dropped keys, a data profile with no disks, a
+# gateway that wrongly declares disks, a profile missing its required tuning.
+#
+# Usage: check-config --target <conf-dir>      (e.g. --target conf/gateway)
+# Exit:  three-state (see lib/common.sh). No JSON backend => SKIP_DEP.
+
+set -u
+SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/common.sh"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/json.sh"
+
+TARGET_DIR=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--target) TARGET_DIR="${2:-}"; shift 2 ;;
+		--target=*) TARGET_DIR="${1#*=}"; shift ;;
+		*) shift ;;   # ignore unrelated flags so the runner can pass shared ones
+	esac
+done
+
+if [ -z "$TARGET_DIR" ]; then
+	printf 'check-config: --target <conf-dir> is required\n' >&2
+	exit "$EX_USAGE"
+fi
+
+profile="$(basename "$TARGET_DIR")"
+SELFCHECK_TARGET="$profile"
+nesetup="$TARGET_DIR/nesetup.json"
+
+if [ ! -f "$nesetup" ]; then
+	fail config.missing "$nesetup not found" "create the profile's nesetup.json"
+	sc_finish
+fi
+
+if ! sc_json_available; then
+	skip_dep config.backend "no JSON backend (need jq or python)" "install jq or python3"
+	sc_finish
+fi
+
+if ! sc_json_valid "$nesetup"; then
+	fail config.invalid "$nesetup is not valid JSON" "fix the JSON syntax"
+	sc_finish
+fi
+
+facts="$(sc_json_profile_facts "$nesetup")" || { skip_dep config.backend "could not extract config facts" "install jq or python3"; sc_finish; }
+eval "$facts"
+
+viol=0
+bad() { fail "$1" "$nesetup: $2" "${3:-}"; viol=$((viol+1)); }
+
+# --- shared invariants (all profiles) ---------------------------------------
+[ "${FD_ISINT:-0}" = 1 ] || bad config.failure_domain "ccow.tenant.failure_domain missing or not an integer" \
+	"set an integer failure_domain (0 per-disk, 1 per-node)"
+[ "${BROKER_OK:-0}" = 1 ] || bad config.broker_if "ccow.network.broker_interfaces missing/empty" "set the client/broker NIC, e.g. eth0"
+[ "${SERVER_OK:-0}" = 1 ] || bad config.server_if "ccowd.network.server_interfaces missing/empty" "set the Replicast server NIC, e.g. eth0"
+[ "${TRANSPORT_LEN:--1}" -ge 1 ] 2>/dev/null || bad config.transport "ccowd.transport missing or empty array" 'set a transport, e.g. ["rtrd"]'
+case "${IS_AGG:-_absent_}" in
+	0|1) : ;;
+	*) bad config.is_aggregator "auditd.is_aggregator must be 0 or 1 (got '${IS_AGG:-<absent>}')" "set is_aggregator to 0 or 1" ;;
+esac
+[ "${DEVICES_TYPE:-absent}" = array ] || bad config.devices_type "rtrd.devices missing or not an array" \
+	"set rtrd.devices to an array (use [] for a gateway)"
+
+dlen="${DEVICES_LEN:--1}"
+
+# --- profile-specific invariants --------------------------------------------
+case "$profile" in
+	gateway)
+		[ "$dlen" -eq 0 ] 2>/dev/null || bad config.gateway.devices \
+			"gateway profile must declare NO disks (rtrd.devices must be empty), found $dlen" \
+			"empty rtrd.devices for a protocol-only gateway, or use a data profile"
+		;;
+	default|single-node|high-performance|large-object-throughput)
+		if [ "$dlen" -lt 1 ] 2>/dev/null; then
+			bad config.devices.empty "data profile '$profile' must declare at least one device, found ${dlen/-1/0}" \
+				"add rtrd.devices entries, or use the gateway profile for protocol-only nodes"
+		else
+			[ "${HAVE_NAME_DEVICE:-0}" = 1 ] || bad config.devices.keys \
+				"every rtrd.devices[] entry needs both \"name\" and \"device\"" "add the missing name/device keys"
+			case "$profile" in
+				single-node)
+					[ "${FD_VALUE:-}" = 0 ] || bad config.single_node.fd \
+						"single-node requires ccow.tenant.failure_domain=0 (got '${FD_VALUE:-<absent>}')" \
+						"set failure_domain to 0 (per-disk failure domain)" ;;
+				high-performance)
+					[ "${HAVE_JOURNAL:-0}" = 1 ] || bad config.hp.journal \
+						"high-performance requires a \"journal\" (SSD WAL) on every device" \
+						"add a journal device id to each rtrd.devices[] entry, or use the default profile" ;;
+				large-object-throughput)
+					[ "${HAVE_TUNING:-0}" = 1 ] || bad config.lot.tuning \
+						"large-object-throughput requires readahead+wal_disabled+sync on every device" \
+						"add the tuning keys to each device, or use the default profile" ;;
+			esac
+		fi
+		;;
+	*)
+		# Unknown profile: enforce shared invariants only; if it declares disks,
+		# require name+device. Do not impose another profile's rules.
+		note config.profile.unknown "no profile-specific ruleset for '$profile'; validated shared invariants only"
+		if [ "$dlen" -ge 1 ] 2>/dev/null; then
+			[ "${HAVE_NAME_DEVICE:-0}" = 1 ] || bad config.devices.keys \
+				"every rtrd.devices[] entry needs both \"name\" and \"device\"" "add the missing keys"
+		fi
+		;;
+esac
+
+if [ "$viol" -eq 0 ] && [ "$SC_SKIP_DEP_N" -eq 0 ]; then
+	pass config.ok "$profile: nesetup.json satisfies all invariants"
+fi
+
+sc_finish

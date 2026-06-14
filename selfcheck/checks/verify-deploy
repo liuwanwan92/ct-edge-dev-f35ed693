@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+#
+# selfcheck/checks/verify-deploy -- live (TIER=live), read-only.
+#
+# Confirms a cluster actually came up and is SERVING (not merely "containers
+# running"). Skipped unless --live (SELFCHECK_LIVE=1). All probes are read-only
+# (netstat / neadm list|status / svc-check GET), so it is safe to re-run.
+#
+# Core oracles: REST :8080 listening, cluster "consistent state", devices
+# ONLINE (data profiles). Optional per-protocol checks for the protocols named
+# in $SELFCHECK_PROTOCOLS (e.g. "iscsi nfs s3"): the endpoint port must listen
+# AND the existing svc-check exporter must report status 1 (truly usable).
+#
+# Usage: verify-deploy --target <conf-dir>
+
+set -u
+SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SC_ROOT="$(cd "$SC_DIR/../.." && pwd)"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/common.sh"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/svccheck.sh"
+
+TARGET_DIR=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--target) TARGET_DIR="${2:-}"; shift 2 ;;
+		--target=*) TARGET_DIR="${1#*=}"; shift ;;
+		*) shift ;;
+	esac
+done
+profile="$(basename "${TARGET_DIR:-global}")"
+SELFCHECK_TARGET="$profile"
+
+if [ "${SELFCHECK_LIVE:-0}" != 1 ]; then
+	skip_na deploy.live "deployment verification needs --live (a reachable cluster)"
+	sc_finish
+fi
+[ -n "${SELFCHECK_MOCKS:-}" ] && PATH="$SELFCHECK_MOCKS:$PATH"
+need() { command -v "$1" >/dev/null 2>&1; }
+
+# --- core: REST listening ---------------------------------------------------
+if ! need netstat; then
+	skip_dep deploy.rest "netstat not available" "install net-tools or run on the node"
+elif netstat -ant 2>/dev/null | grep ':8080' | grep -q LISTEN; then
+	pass deploy.rest "REST API listening on :8080"
+else
+	fail deploy.rest "REST API not listening on :8080" "start the data container: nedge start -j ccowserv -j rest"
+fi
+
+# --- core: cluster consistent ----------------------------------------------
+if ! need neadm; then
+	skip_dep deploy.cluster "neadm not available" "set up the neadm alias (mgmt/initialization.md)"
+elif neadm system status 2>/dev/null | grep -qi 'consistent state'; then
+	pass deploy.cluster "cluster reports a consistent state"
+else
+	fail deploy.cluster "cluster not in a consistent state" "run: neadm system init"
+fi
+
+# --- core: devices ONLINE (data profiles only) ------------------------------
+case "$profile" in
+	gateway)
+		skip_na deploy.devices "gateway profile has no local devices to verify" ;;
+	*)
+		if ! need neadm; then
+			skip_dep deploy.devices "neadm not available" "set up the neadm alias"
+		else
+			dl="$(neadm device list 2>/dev/null)"
+			if printf '%s' "$dl" | grep -qiE 'OFFLINE|FAULT|UNAVAIL'; then
+				fail deploy.devices "one or more devices are not ONLINE" "inspect: neadm device list"
+			elif printf '%s' "$dl" | grep -qi ONLINE; then
+				pass deploy.devices "all listed devices are ONLINE"
+			else
+				skip_dep deploy.devices "neadm device list returned no device rows" "verify the cluster is initialized"
+			fi
+		fi ;;
+esac
+
+# --- optional: per-protocol endpoints + serving -----------------------------
+if [ -n "${SELFCHECK_PROTOCOLS:-}" ]; then
+	for p in $SELFCHECK_PROTOCOLS; do
+		case "$p" in
+			iscsi) port=3260; script="$SC_ROOT/prometheus/svc-checks/nedge-prom-iscsi-check"; metric=nedge_iscsi_service_status; svc=iscsisvc ;;
+			nfs)   port=111;  script="$SC_ROOT/prometheus/svc-checks/nedge-prom-nfs-check";   metric=nedge_nfs_service_status;  svc=nfssvc1 ;;
+			s3)    port=9982; script="$SC_ROOT/prometheus/svc-checks/nedge-prom-s3-check";    metric=nedge_s3_service_status;   svc=s3svc1 ;;
+			*) note deploy.proto "unknown protocol '$p' in SELFCHECK_PROTOCOLS"; continue ;;
+		esac
+		if need netstat && netstat -ant 2>/dev/null | grep ":$port" | grep -q LISTEN; then
+			pass "deploy.$p.port" "$p endpoint :$port is listening"
+		else
+			fail "deploy.$p.port" "$p endpoint :$port is not listening" "create and serve the $p service"
+		fi
+		st="$(svc_check_status "$script" "$metric" "$svc")" || st=""
+		if [ -z "$st" ]; then
+			skip_dep "deploy.$p.serve" "$p svc-check produced no value" "ensure the probe tool is installed on the client"
+		elif [ "$st" = 1 ]; then
+			pass "deploy.$p.serve" "$p service is actually serving (svc-check status 1)"
+		else
+			fail "deploy.$p.serve" "$p service is up at the process level but not serving (svc-check status $st)" \
+				"a container running is not enough: check serve path / bucket / LUN / export"
+		fi
+	done
+	svc_cache_clean
+else
+	note deploy.protocols 'set SELFCHECK_PROTOCOLS="iscsi nfs s3" to verify protocol endpoints are serving'
+fi
+
+sc_finish

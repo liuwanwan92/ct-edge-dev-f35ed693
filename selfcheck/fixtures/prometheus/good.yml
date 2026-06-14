@@ -1,0 +1,11 @@
+# A prometheus.yml already pointed at a real management endpoint (matches
+# fixtures/targets/default.targets) -- the "configured" good case.
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: 'nexentaedge'
+    static_configs:
+      - targets: ['10.10.0.5:8881']

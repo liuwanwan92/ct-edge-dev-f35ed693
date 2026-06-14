@@ -1,0 +1,5 @@
+# Keys a "new" image requires -- adds ccow.tenant.replication_count, which the
+# reused nesetup.json does NOT have, so verify-upgrade flags schema drift.
+ccow.tenant.failure_domain
+ccowd.transport
+ccow.tenant.replication_count

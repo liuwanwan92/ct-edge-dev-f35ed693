@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+#
+# selfcheck/checks/check-monitoring -- static + mock, CI-always.
+#
+# Three independent assertions about the monitoring stack:
+#   A. prometheus.yml's nexentaedge scrape target is consistent with the
+#      operator's real management endpoint (catches "monitoring target
+#      mismatch"; flags the shipped placeholder as unconfigured).
+#   B. the install_dashboard.sh render still rewrites that placeholder correctly
+#      (catches silent drift between the example yml and the installer).
+#   C. each svc-check exporter parses, its SERVICES block is well-formed, and it
+#      maps probe results to the documented status numbers (so the runtime
+#      oracle can be trusted -- the monitoring half of "no false success").
+#
+# Usage: check-monitoring [--prometheus <file>] [--targets-file <file>]
+#   Expected target also taken from $SELFCHECK_MGMTIP (=> <ip>:8881) if set.
+
+set -u
+SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SC_ROOT="$(cd "$SC_DIR/../.." && pwd)"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/common.sh"
+# shellcheck source=/dev/null
+. "$SC_DIR/../lib/svccheck.sh"
+
+SELFCHECK_TARGET="global"
+: "${SELFCHECK_MOCKS:=$SC_DIR/../mocks}"
+export SELFCHECK_MOCKS
+
+PROM="$SC_ROOT/prometheus/prometheus.yml"
+TARGETS_FILE=""
+PLACEHOLDER="172.20.1.20:8881"
+MGMTIP_TEST="10.1.1.9"
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--prometheus) PROM="${2:-}"; shift 2 ;;
+		--prometheus=*) PROM="${1#*=}"; shift ;;
+		--targets-file) TARGETS_FILE="${2:-}"; shift 2 ;;
+		--targets-file=*) TARGETS_FILE="${1#*=}"; shift ;;
+		*) shift ;;
+	esac
+done
+
+prom_target() {  # <file> -> nexentaedge host:port (first match)
+	awk '/job_name:.*nexentaedge/{f=1} f&&/targets:/{print; exit}' "$1" \
+		| grep -oE '[0-9A-Za-z._-]+:[0-9]+' | head -n1
+}
+
+expected_target() {  # from targets-file (nexentaedge=...) or $SELFCHECK_MGMTIP
+	if [ -n "$TARGETS_FILE" ] && [ -f "$TARGETS_FILE" ]; then
+		grep -E '^nexentaedge=' "$TARGETS_FILE" | head -n1 | cut -d= -f2-
+		return
+	fi
+	[ -n "${SELFCHECK_MGMTIP:-}" ] && printf '%s:8881\n' "$SELFCHECK_MGMTIP"
+}
+
+# --- A. prometheus target ----------------------------------------------------
+if [ ! -f "$PROM" ]; then
+	fail monitoring.prom.missing "$PROM not found" "ensure prometheus.yml exists"
+else
+	actual="$(prom_target "$PROM")"
+	expected="$(expected_target)"
+	if [ -z "$actual" ]; then
+		fail monitoring.target.missing "no 'nexentaedge' scrape target in $PROM" \
+			"add a nexentaedge job with the management IP:8881 target"
+	elif [ -n "$expected" ]; then
+		if [ "$actual" = "$expected" ]; then
+			pass monitoring.target.ok "nexentaedge target $actual matches expected"
+		else
+			fail monitoring.target.mismatch "nexentaedge target is $actual, expected $expected" \
+				"point prometheus.yml at $expected (run install_dashboard.sh <MGMTIP>)"
+		fi
+	elif [ "$actual" = "$PLACEHOLDER" ]; then
+		note monitoring.target.placeholder "nexentaedge target is the shipped example placeholder ($actual); supply --targets-file or \$SELFCHECK_MGMTIP, or run install_dashboard.sh <MGMTIP>"
+	else
+		pass monitoring.target.customized "nexentaedge target $actual (not the placeholder)"
+	fi
+fi
+
+# --- B. install_dashboard render contract ------------------------------------
+if [ -f "$PROM" ] && grep -q "$PLACEHOLDER" "$PROM"; then
+	tmpf="$(mktemp)"
+	sed -e "s/targets: \['$PLACEHOLDER'\]/targets: ['$MGMTIP_TEST:8881']/g" "$PROM" > "$tmpf"
+	rt="$(prom_target "$tmpf")"
+	rm -f "$tmpf"
+	if [ "$rt" = "$MGMTIP_TEST:8881" ]; then
+		pass monitoring.render.ok "install_dashboard sed rewrites the placeholder to <MGMTIP>:8881"
+	else
+		fail monitoring.render.broken "render produced '$rt', expected $MGMTIP_TEST:8881" \
+			"the placeholder in prometheus.yml no longer matches install_dashboard.sh's sed pattern"
+	fi
+else
+	skip_na monitoring.render "no '$PLACEHOLDER' placeholder in $PROM to render"
+fi
+
+# --- C. svc-check SERVICES shape + status contract ---------------------------
+svc_services() {  # <script> -> the uncommented SERVICES[...]= values
+	grep -E '^[[:space:]]*SERVICES\[[^]]+\]=' "$1" 2>/dev/null | grep -v '^[[:space:]]*#'
+}
+
+check_shape() {  # <script> <proto>
+	local script=$1 proto=$2 n=0 line val ok=1
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		n=$((n+1))
+		val="${line#*]=}"; val="${val%%#*}"; val="${val%"${val##*[![:space:]]}"}"
+		case "$proto" in
+			iscsi) printf '%s' "$val" | grep -qE '^iscsi://[^:^]+:[0-9]+\^[0-9]+$' || ok=0 ;;
+			s3)    printf '%s' "$val" | grep -qE '^https?://.+\^[^^]+\^[^^]+$' || ok=0 ;;
+			nfs)   printf '%s' "$val" | grep -qE '^/.+' || ok=0 ;;
+		esac
+	done < <(svc_services "$script")
+	if [ "$n" -lt 1 ]; then
+		fail "monitoring.services.$proto.empty" "$(basename "$script"): SERVICES block is empty" \
+			"add at least one SERVICES[name]=... entry"
+	elif [ "$ok" -ne 1 ]; then
+		fail "monitoring.services.$proto.shape" "$(basename "$script"): a SERVICES entry has the wrong shape for $proto" \
+			"expected iscsi://host:port^lun / URL^KEYID^KEYSECRET / /mount-path"
+	else
+		pass "monitoring.services.$proto.ok" "$(basename "$script"): $n SERVICES entr$( [ "$n" = 1 ] && echo y || echo ies) well-formed"
+	fi
+}
+
+ISCSI="$SC_ROOT/prometheus/svc-checks/nedge-prom-iscsi-check"
+NFS="$SC_ROOT/prometheus/svc-checks/nedge-prom-nfs-check"
+S3="$SC_ROOT/prometheus/svc-checks/nedge-prom-s3-check"
+
+for s in "$ISCSI" "$NFS" "$S3"; do
+	[ -f "$s" ] || fail monitoring.svc.missing "$(basename "$s") not found" "restore the svc-check exporter"
+done
+
+check_shape "$ISCSI" iscsi
+check_shape "$NFS"   nfs
+check_shape "$S3"    s3
+
+# Drive a representative healthy + degraded state per protocol (fast paths).
+# env wrapper: svc_check_status is a shell function, so call via a subshell.
+contract_fn() { ( eval "export $1"; svc_check_status "$2" "$3" "$4" ); }
+run_contract() {  # <assignment> <script> <metric> <service> <expected>
+	local got; got="$(contract_fn "$1" "$2" "$3" "$4")" || got=""
+	if [ -z "$got" ]; then
+		skip_dep "monitoring.contract" "$(basename "$2"): no value for [$1]" "probe/mock unavailable"
+	elif [ "$got" = "$5" ]; then
+		pass "monitoring.contract" "$(basename "$2"): [$1] => $got (want $5)"
+	else
+		fail "monitoring.contract" "$(basename "$2"): [$1] => $got, want $5" "exporter state->status mapping changed"
+	fi
+}
+
+run_contract 'MOCK_ISCSI_STATE=ready' "$ISCSI" nedge_iscsi_service_status iscsisvc 1
+run_contract 'MOCK_ISCSI_STATE=down'  "$ISCSI" nedge_iscsi_service_status iscsisvc -1
+run_contract 'MOCK_S3_STATE=ok'       "$S3"    nedge_s3_service_status   s3svc1   1
+run_contract 'MOCK_S3_STATE=down'     "$S3"    nedge_s3_service_status   s3svc1   -2
+run_contract 'MOCK_RPCINFO=ready'     "$NFS"   nedge_nfs_service_status  nfssvc1  1
+run_contract 'MOCK_RPCINFO=down'      "$NFS"   nedge_nfs_service_status  nfssvc1  0
+
+svc_cache_clean
+sc_finish

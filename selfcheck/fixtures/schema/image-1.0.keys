@@ -1,0 +1,8 @@
+# Keys an "old" image requires of nesetup.json -- all present in the shipped
+# profiles, so verify-upgrade --strict passes the schema check.
+ccow.tenant.failure_domain
+ccow.network.broker_interfaces
+ccowd.network.server_interfaces
+ccowd.transport
+auditd.is_aggregator
+rtrd.devices
