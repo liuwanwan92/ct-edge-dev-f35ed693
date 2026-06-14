@@ -1,0 +1,238 @@
+FORMAT: 1A
+HOST: https://edge.nexenta.com/
+
+# Edge-X S3-compatible API
+
+The API provides access to advanced Edge Object interfaces, such as access to NoSQL Key-Value
+database as an Object, S3 Object Append mode, S3 Object RW mode and S3 Object Stream Session
+(relaxed POSIX) mode.
+
+A Stream Session encompasses a series of edits to one object made by one source that are
+saved as one or more versions during a specific finite time duration. A Stream Session must
+be isolated while it is open. That is, users working through this session will not see
+updates to this object from other sessions.
+
+Stream Session allows high-performance POSIX-style access to an object and thus it is
+beneficial for client applications to use HTTP/1.1 Persistent Connection extensions,
+to minimize latency between updates or reads.
+
+Quick summary of differences between AWS S3, Azure Blob, GCP Object and Edge-X:
+
+<img src="https://github.com/Nexenta/edge-dev/blob/master/images/EdgeVsS3.png?raw=true" alt="EdgeVsS3.png">
+
+## Key-Value store [/{bucket}/{blob}{?comp,key,maxresults,values,cancel,finalize}]
+
+Extends access to an Object as scale-out, high-performance NoSQL key-value database.
+Default value format is in JSON. Raw format is supported if `key` query parameter is
+specified during insert operation.
+
+NoSQL key-value store supports two modes of operations. Immediately versioned and Stream Session.
+In case of Stream Session, client's `x-session-id` will be used to temporarily keep on-going
+session parameters.
+
+If `x-session-id` header parameter specified (returned as a result of previous
+insert or delete response) then it will continue on going stream session and will continue
+streaming operation. Session will stay active for up to 30 seconds. It is responsibility of a
+client appilcation to finalize or cancel it by supplying `finalize` or `cancel` query parameter.
+
++ Parameters
+    + bucket - bucket name
+    + blob - key value sharded blob
+
+### List Key Values [GET]
+
+List all keys and corresponding values in key-value database. If `key` specified and result is
+unique, then the only value will be returned at a time with response content type
+`application/octet-stream`. If `key` is omited or result is not unique, then response will
+be `application/json` containing json object with both keys and values specified.
+
++ Parameters
+    + comp (`kv`) - component
+    + key (optional) - return only pairs which starts with this key 
+    + maxresults (number, optional) - number of key-value pairs to return in one response
+        + Default: `1000`
+    + values (number, optional) - return values if specified
+        + Default: `0`
+        
+            
++ Response 206 (application/json)
+
+        {
+            "1": {"id":"avon-and-somerset","name":"Avon and Somerset Constabulary"},
+            "2": {"id":"bedfordshire","name":"Bedfordshire Police"},
+            "3": {"id":"cambridgeshire","name":"Cambridgeshire Constabulary"}
+        }
+
+### Insert Key Value Pairs [POST]
+
+Insert new key value pair or update existing one in key-value database. If `key` specified then
+request body will be considered as value, can be of any type and only one key will be inserted
+or updated at a time. In case of missing `key`, request body has to be of content
+`application/json` and need to contain a json object with one more more keys to insert or
+update. Value cannot exceed 1MB in size. Key-value database on to of Object was designed for
+storing billions of small records. If you need to store larger values, consider to use
+normal S3 Object upload instead.
+
+
++ Parameters
+    + comp (`kv`) - component
+    + key (optional) - new or existing key to insert or update 
+    + cancel (optional) - cancel existig stream session
+    + finalize (optional) - finalize existig stream session and create new object version 
+    
++ Request
+    + Headers
+    
+            x-session-id: j6oAOxCWZh
+
++ Request (application/json)
+
+        {
+            "3": {"id":"cleveland","name":"Cleveland Police"},
+            "4": {"id":"cumbria","name":"Cumbria Constabulary"}
+        }
+
++ Response 200 (application/json)
+
+    + Headers
+
+            x-session-id: j6oAOxCWZh
+
+### Delete Key Value Pairs [DELETE]
+
+Delete existing key value pair in key-value blob. If `key` is not specified then
+request body will be considered as `application/json` input of keys to be deleted.
+
++ Parameters
+    + comp (`kv`) - component
+    + key (optional) - existing key to delete
+    + cancel (optional) - cancel existig stream session
+    + finalize (optional) - finalize existig stream session and create new object version 
+
++ Request
+    + Headers
+    
+            x-session-id: j6oAOxCWZh
+            
++ Request (application/json)
+
+        {
+            "3": "",
+            "4": ""
+        }
+        
++ Response 201 (application/json)
+
+    + Headers
+
+            Location: /{bucket}/{blob}?comp=kv
+
+## Extended Object Access [/{bucket}/{object}{?comp}]
+
+Extends access to object with append and random I/O modes
+
++ Parameters
+    + bucket - bucket name
+    + object - object name
+
+### Edit Object [POST]
+
+Operation commits a new block of data to existing or new object. In case of `appendblock`
+it appends block to the end of object. In case of `randwrblock` it overwrites existing block
+or creates new one, where `x-ccow-offset` specifies start offset for the block to be
+written and `x-ccow-length` the length of the block in bytes.
+
+Each edit is versioned and will create new CCOW universal version identifier which consists
+of generation id and timestamp.
+
+If `x-ccow-condition-append-offset` specified then `appendblock` request succeeds only
+if the current offset matches that specified by the client. Otherwise, the request fails
+with the `AppendOffsetConditionNotMet` error (HTTP status code 412 – Precondition Failed).
+
++ Parameters
+    + comp (`appendblock`, `randwrlock`) - component
+    
++ Request
+    + Headers
+    
+            x-ccow-offset: 0
+            x-ccow-length: 62144
+            x-ccow-condition-append-offset: 0
+
++ Response 200
+
+        
+## Stream Session Object Access [/{bucket}/{object}{?comp,cancel,finalize}]
+
+Extends access to object with high performance Stream Session I/O mode. Data blocks can be
+added/removed/edited to object at the highest speed prior to version finalization.
+
+Each finalization is versioned and will create new CCOW universal version identifier which
+consists of generation id and timestamp.
+
+It is recommend to use HTTP/1.1 clients to support persistent connections and avoid unnecessary
+TCP/IP handshakes and re-connects.
+
+Optionally client can specify `x-ccow-chunkmap-btree-order` (32-640) and/or
+`x-ccow-chunkmap-chunk-size` (power of 2, 4096 - 4194304) to optimize read/write operations.
+Client has to specify same exactly btree parameters on each request. Otherwise, the request may
+fail with the `BtreeConditionNotMet` error (HTTP status code 412 – Precondition Failed). HTTP
+server will cache initially supplied btree parameters in on going `x-session-id`.
+
+New `x-session-id` has to be initialized with `POST`, `PUT`, `GET` or `HEAD` (stat) request by
+not supplying `finalize` or `cancel` query parameter.
+
+If `x-session-id` header parameter specified (returned as a result of previous read or write
+response) then it will continue on going stream session and will return same header parameter.
+Session will stay active for 30 seconds. It is responsibility of a client appilcation to
+finalize or cancel it by supplying `finalize` or `cancel` query parameter.
+
+
++ Parameters
+    + bucket - bucket name
+    + object - object name
+    + comp (`streamsession`) - component
+
+### Streamed Read [GET]
+
+Operation reads a set of blocks of data from an existing object.
+Header parameter `x-ccow-offset` specifies start offset for the blocks to be read and
+`x-ccow-length` specifies the length of data to be returned.
+
+This operation can be intermixed with `Streamed Write` at any time.
+
++ Parameters
+    + cancel (optional) - cancel existig stream session
+    + finalize (optional) - finalize existig stream session and create new object version
+    
++ Request
+    + Headers
+    
+            x-ccow-offset: 0
+            x-ccow-length: 16384
+            x-session-id: j6oAOxCWZh
+
++ Response 206 (application/json)
+
+
+### Streamed Write [POST]
+
+Operation commits a new set of blocks of data to existing or new object.
+Header parameter `x-ccow-offset` specifies start offset for the blocks to be written to and
+`x-ccow-length` specifies the length of block in bytes.
+
+This operation can be intermixed with `Streamed Read` at any time.
+
+
++ Parameters
+    + cancel (optional) - cancel existig stream session
+    + finalize (optional) - finalize existig stream session and create new object version
+
++ Request
+    + Headers
+    
+            x-ccow-offset: 0
+            x-ccow-length: 16384
+            session-id: Sj6oAOxCWZh
+
++ Response 200
