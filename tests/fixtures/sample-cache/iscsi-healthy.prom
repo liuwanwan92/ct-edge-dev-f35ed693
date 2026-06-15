@@ -1,0 +1,4 @@
+# HELP nedge_iscsi_service_status iSCSI service client access status
+# TYPE nedge_iscsi_service_status gauge
+nedge_iscsi_service_status{service="iscsisvc",path="iscsi://10.16.110.214:3260^1",hostname="testhost",namespace="nedge"} 1
+nedge_iscsi_service_status{service="iscsi-z1",path="iscsi://10.16.110.211:3260^1",hostname="testhost",namespace="nedge"} 1

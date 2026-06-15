@@ -1,0 +1,3 @@
+# HELP nedge_s3_service_status S3 service client access status
+# TYPE nedge_s3_service_status gauge
+nedge_s3_service_status{service="s3svc1",path="http://10.16.110.215:9982/bk1/obj1^9F6RGX8ALBCOM2YJNRQ5^CSzFfqf0j1KxmCuctp8vx1UUKmUr0lSWuT5SSlwp",hostname="testhost",namespace="nedge"} 1

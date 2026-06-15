@@ -1,0 +1,4 @@
+# HELP nedge_nfs_service_status NFS service client access status
+# TYPE nedge_nfs_service_status gauge
+nedge_nfs_service_status{service="nfssvc1",path="/mnt/nfssvc1",hostname="testhost",namespace="nedge"} 1
+nedge_nfs_service_status{service="nfssvc2",path="/mnt/nfssvc2",hostname="testhost",namespace="nedge"} 1
