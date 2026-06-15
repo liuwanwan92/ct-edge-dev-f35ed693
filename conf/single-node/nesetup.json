@@ -1,0 +1,41 @@
+{
+	"ccow": {
+		"tenant": {
+			"failure_domain": 0
+		},
+		"network": {
+			"broker_interfaces": "eth0"
+		}
+	},
+	"ccowd": {
+		"network": {
+			"server_interfaces": "eth0"
+		},
+		"transport": [
+			"rtrd"
+		]
+	},
+	"auditd": {
+		"is_aggregator": 1
+	},
+	"rtrd": {
+		"devices": [
+			{
+				"name": "ata-MICRON_M510DC_MTFDDAK800MBP_15351133916C",
+				"device": "/dev/sdb"
+			},
+			{
+				"name": "ata-MICRON_M510DC_MTFDDAK800MBP_15351133916F",
+				"device": "/dev/sdc"
+			},
+			{
+				"name": "ata-MICRON_M510DC_MTFDDAK800MBP_15351133919F",
+				"device": "/dev/sdd"
+			},
+			{
+				"name": "ata-MICRON_M510DC_MTFDDAK800MBP_153511339196",
+				"device": "/dev/sde"
+			}
+		]
+	}
+}
