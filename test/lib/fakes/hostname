@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Pinned hostname so metric labels are deterministic and identify the node
+# under test (set by the harness via FAKE_HOSTNAME per simulated node).
+printf '%s\n' "${FAKE_HOSTNAME:-testnode}"

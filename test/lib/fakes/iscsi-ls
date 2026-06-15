@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+FAKE_CMD=iscsi-ls
+source "${FAKE_LIB:?FAKE_LIB must point to _fakelib.bash}"
+# iscsi_check calls this twice with identical argv: first for the exit code,
+# then piped into grep for "Lun:<n>". A single per-step directive drives both
+# consistently (e.g. `rc=0 echo=Lun:1` => discoverable AND lun present => 1).
+fake_dispatch _ "$@"

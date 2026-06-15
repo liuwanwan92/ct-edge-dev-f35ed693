@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+FAKE_CMD=rpcinfo
+source "${FAKE_LIB:?FAKE_LIB must point to _fakelib.bash}"
+fake_dispatch _ "$@"

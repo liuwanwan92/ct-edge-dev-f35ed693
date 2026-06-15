@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# No-op. The production NFS check brackets slow probes with
+#   for (( i=1 ; i< 20 ; i++ )) ; do ps -p $PID && sleep 1 ; done
+# Shadowing sleep with a no-op makes that loop fast-forward instantly, so a
+# parked (blocked) probe is detected and killed in milliseconds, letting us hit
+# the -1/-2 timeout branches deterministically without ~20s of real waiting.
+exit 0

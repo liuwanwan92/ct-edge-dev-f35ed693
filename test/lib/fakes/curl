@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+FAKE_CMD=curl
+source "${FAKE_LIB:?FAKE_LIB must point to _fakelib.bash}"
+# Classify the S3 check call site so the three sequential HEAD probes can be
+# driven independently:
+#   object  - authed HEAD on bucket/object URL   (success => state 1)
+#   bucket  - authed HEAD on bucket URL           (success => state 0)
+#   plain   - unauthenticated HEAD on bucket URL  (403 => state -1, else -2)
+url=""; has_auth=0; prev=""
+for a in "$@"; do
+	[ "$prev" = "-I" ] && url="$a"
+	case "$a" in *Authorization*) has_auth=1 ;; esac
+	prev="$a"
+done
+key=plain
+if [ "$has_auth" = 1 ]; then
+	rest="${url#*://}"   # strip scheme://
+	path="${rest#*/}"    # strip host[:port]/
+	if [ "$path" = "$rest" ]; then
+		key=bucket   # no path component at all
+	else
+		case "$path" in
+			*/*) key=object ;;   # bucket/object
+			*)   key=bucket ;;   # bucket only
+		esac
+	fi
+fi
+fake_dispatch "$key" "$@"
